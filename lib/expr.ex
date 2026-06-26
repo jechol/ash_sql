@@ -2623,7 +2623,7 @@ defmodule AshSql.Expr do
 
   defp default_dynamic_expr(
          query,
-         %Exists{at_path: at_path, path: [first | rest], expr: expr} = exists,
+         %{__struct__: Exists, at_path: at_path, path: [first | rest], expr: expr} = exists,
          bindings,
          _embedded?,
          acc,
@@ -2645,9 +2645,14 @@ defmodule AshSql.Expr do
 
     filter = Ash.Filter.move_to_relationship_path(expr, rest)
 
+    join_filters =
+      case exists do
+        %{__join_filters__: join_filters} -> join_filters
+        _ -> %{}
+      end
+
     filter =
-      exists
-      |> Map.get(:__join_filters__, %{})
+      join_filters
       |> Map.fetch([first_relationship.name])
       |> case do
         {:ok, join_filter} ->
@@ -2665,8 +2670,7 @@ defmodule AshSql.Expr do
       end
 
     filter =
-      exists
-      |> Map.get(:__join_filters__, %{})
+      join_filters
       |> Map.delete([first_relationship.name])
       |> Enum.reduce(filter, fn {path, path_filter}, filter ->
         path = Enum.drop(path, 1)
@@ -3145,11 +3149,11 @@ defmodule AshSql.Expr do
         %{arguments: [_, type, constraints]} = type_func = reverse_engineer_type(item)
         %{type_func | arguments: [list_item, {:array, type}, [items: constraints || []]]}
 
-      %{} = list_item ->
-        %Type{arguments: [list_item, :map, []]}
-
       %Decimal{} = list_item ->
         %Type{arguments: [list_item, :decimal, []]}
+
+      %{} = list_item ->
+        %Type{arguments: [list_item, :map, []]}
 
       list_item ->
         list_item
@@ -3863,12 +3867,7 @@ defmodule AshSql.Expr do
             get_untyped_get_path_expr(query, get_path, bindings, embedded?, acc)
 
           _ ->
-            {type, constraints} =
-              case type do
-                {:array, type} -> {{:array, type}, []}
-                {type, constraints} -> {type, constraints}
-                type -> {type, []}
-              end
+            {type, constraints} = type_and_constraints(type)
 
             do_dynamic_expr(
               query,
@@ -3880,12 +3879,7 @@ defmodule AshSql.Expr do
             )
         end
       else
-        {type, constraints} =
-          case type do
-            {:array, type} -> {{:array, type}, []}
-            {type, constraints} -> {type, constraints}
-            type -> {type, []}
-          end
+        {type, constraints} = type_and_constraints(type)
 
         do_dynamic_expr(
           query,
@@ -3900,6 +3894,10 @@ defmodule AshSql.Expr do
       do_dynamic_expr(query, expr, Map.put(bindings, :no_cast?, true), embedded?, acc, type)
     end
   end
+
+  defp type_and_constraints({:array, type}), do: {{:array, type}, []}
+  defp type_and_constraints({type, constraints}), do: {type, constraints}
+  defp type_and_constraints(type), do: {type, []}
 
   defp no_cast_for_native_value?(expr, type) when is_binary(expr) do
     unwrap_type_for_native_check(type) == Ash.Type.String
