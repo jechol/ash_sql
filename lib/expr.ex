@@ -3145,11 +3145,11 @@ defmodule AshSql.Expr do
         %{arguments: [_, type, constraints]} = type_func = reverse_engineer_type(item)
         %{type_func | arguments: [list_item, {:array, type}, [items: constraints || []]]}
 
-      %{} = list_item ->
-        %Type{arguments: [list_item, :map, []]}
-
       %Decimal{} = list_item ->
         %Type{arguments: [list_item, :decimal, []]}
+
+      %{} = list_item ->
+        %Type{arguments: [list_item, :map, []]}
 
       list_item ->
         list_item
