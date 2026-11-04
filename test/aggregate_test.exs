@@ -187,6 +187,17 @@ defmodule AshSql.AggregateTest do
     assert AshSql.Aggregate.can_group?(Post, aggregate, %Ecto.Query{})
   end
 
+  test "a parent in the aggregate's own filter prevents grouping" do
+    definition = Ash.Resource.Info.aggregate(Post, :high_score_comments)
+
+    {:ok, aggregate} =
+      AshSql.Aggregate.resource_aggregate_to_aggregate(Post, definition,
+        actor: %{id: Ash.UUID.generate()}
+      )
+
+    refute AshSql.Aggregate.can_group?(Post, aggregate, %Ecto.Query{})
+  end
+
   describe "resource_aggregate_to_aggregate/3" do
     test "passes actor and tenant to the related read which may require an actor" do
       actor = %{id: Ash.UUID.generate()}

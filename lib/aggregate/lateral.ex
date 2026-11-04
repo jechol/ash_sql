@@ -1560,49 +1560,76 @@ defmodule AshSql.Aggregate.Lateral do
       !has_parent_expr?(aggregate.query.filter)
   end
 
-  defp has_parent_expr?(filter, depth \\ 0) do
-    not is_nil(
-      Ash.Filter.find(
-        filter,
-        fn
-          %Ash.Query.Call{name: :parent, args: [expr]} ->
-            if depth == 0 do
-              true
-            else
-              has_parent_expr?(expr, depth - 1)
-            end
+  defp has_parent_expr?(expr, depth \\ 0)
 
-          %Ash.Query.Exists{expr: expr} ->
-            has_parent_expr?(expr, depth + 1)
+  defp has_parent_expr?(%Ash.Query.Parent{expr: expr}, depth),
+    do: depth == 0 || has_parent_expr?(expr, depth - 1)
 
-          %Ash.Query.Parent{expr: expr} ->
-            if depth == 0 do
-              true
-            else
-              has_parent_expr?(expr, depth - 1)
-            end
+  defp has_parent_expr?(%Ash.Query.Call{name: :parent, args: [expr]}, depth),
+    do: depth == 0 || has_parent_expr?(expr, depth - 1)
 
-          %Ash.Query.Ref{
-            attribute: %Ash.Query.Aggregate{
-              field: %Ash.Query.Calculation{module: module, opts: opts, context: context}
-            }
-          } ->
-            if module.has_expression?() do
-              Ash.Resource.Calculation.expression(module, opts, context)
-              |> has_parent_expr?(depth + 1)
-            else
-              false
-            end
+  defp has_parent_expr?(%Ash.Query.Exists{expr: expr}, depth),
+    do: has_parent_expr?(expr, depth + 1)
 
-          _other ->
-            false
-        end,
-        true,
-        true,
-        true
-      )
-    )
+  defp has_parent_expr?(%Ash.Query.Ref{attribute: attribute}, depth),
+    do: has_parent_expr?(attribute, depth)
+
+  defp has_parent_expr?(%Ash.Query.Aggregate{} = aggregate, depth) do
+    query_has_parent_expr? =
+      case aggregate.query do
+        %Ash.Query{filter: filter, sort: sort} -> has_parent_expr?([filter, sort], depth + 1)
+        _ -> false
+      end
+
+    query_has_parent_expr? ||
+      has_parent_expr?(aggregate.field, depth + 1) ||
+      has_parent_expr?(Map.values(aggregate.join_filters || %{}), depth + 1)
   end
+
+  defp has_parent_expr?(
+         %Ash.Query.Calculation{module: module, opts: opts, context: context},
+         depth
+       ) do
+    Ash.Resource.Calculation.has_expression?(module) &&
+      module
+      |> Ash.Resource.Calculation.expression(opts, context)
+      |> has_parent_expr?(depth)
+  end
+
+  defp has_parent_expr?(%Ash.Filter{expression: expression}, depth),
+    do: has_parent_expr?(expression, depth)
+
+  defp has_parent_expr?(%Ash.Query.BooleanExpression{left: left, right: right}, depth),
+    do: has_parent_expr?(left, depth) || has_parent_expr?(right, depth)
+
+  defp has_parent_expr?(%Ash.Query.Not{expression: expression}, depth),
+    do: has_parent_expr?(expression, depth)
+
+  defp has_parent_expr?(
+         %Ash.CustomExpression{expression: expression, simple_expression: simple_expression},
+         depth
+       ),
+       do: has_parent_expr?(expression, depth) || has_parent_expr?(simple_expression, depth)
+
+  defp has_parent_expr?(%Ash.Query.Call{args: args}, depth),
+    do: has_parent_expr?(args, depth)
+
+  defp has_parent_expr?(%{__operator__?: true, left: left, right: right}, depth),
+    do: has_parent_expr?(left, depth) || has_parent_expr?(right, depth)
+
+  defp has_parent_expr?(%{__function__?: true, arguments: arguments}, depth),
+    do: has_parent_expr?(arguments, depth)
+
+  defp has_parent_expr?(list, depth) when is_list(list),
+    do: Enum.any?(list, &has_parent_expr?(&1, depth))
+
+  defp has_parent_expr?(tuple, depth) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> has_parent_expr?(depth)
+
+  defp has_parent_expr?(map, depth) when is_map(map) and not is_struct(map),
+    do: map |> Map.to_list() |> has_parent_expr?(depth)
+
+  defp has_parent_expr?(_other, _depth), do: false
 
   # We can potentially optimize this. We don't have to prevent aggregates that reference
   # relationships from joining, we can
