@@ -453,10 +453,10 @@ defmodule AshSql.Join do
 
       root_binding = source_query.__ash_bindings__.root_binding
 
-      source_query =
+      {source_query, acc} =
         source
         |> Ash.Resource.Info.primary_key()
-        |> Enum.reduce(source_query, fn pk, source_query ->
+        |> Enum.reduce({source_query, acc}, fn pk, {source_query, acc} ->
           source_row_binding =
             AshSql.Expr.ref_binding(
               %Ref{
@@ -467,10 +467,17 @@ defmodule AshSql.Join do
               parent_bindings
             )
 
-          from(row in source_query,
-            where: field(as(^root_binding), ^pk) == field(parent_as(^source_row_binding), ^pk)
-          )
+          source_query =
+            from(row in source_query,
+              where: field(as(^root_binding), ^pk) == field(parent_as(^source_row_binding), ^pk)
+            )
+
+          {source_query,
+           AshSql.Query.Projection.reference(acc, parent_bindings, source_row_binding, pk)}
         end)
+
+      source_query =
+        source_query
         |> Ecto.Query.where(^dynamic)
         |> Ecto.Query.exclude(:select)
         |> Ecto.Query.exclude(:distinct)
@@ -694,6 +701,18 @@ defmodule AshSql.Join do
             )
         end
 
+      query =
+        if projection = opts[:projection] do
+          query
+          |> put_in([Access.key!(:__ash_bindings__), :projection], projection)
+          |> update_in(
+            [Access.key!(:__ash_bindings__), :bindings, query.__ash_bindings__.root_binding],
+            &Map.put(&1, :projection, projection)
+          )
+        else
+          query
+        end
+
       {:ok, query}
     end
   end
@@ -746,7 +765,8 @@ defmodule AshSql.Join do
     |> Ash.Query.set_context(%{
       data_layer: %{
         table: nil,
-        start_bindings_at: opts[:start_bindings_at] || 0
+        start_bindings_at: opts[:start_bindings_at] || 0,
+        projection: opts[:projection]
       }
     })
     |> then(fn query ->
@@ -1277,6 +1297,8 @@ defmodule AshSql.Join do
           end
         )
 
+      query = AshSql.Query.Projection.track_source(query, current_binding, relationship)
+
       case apply(module, query.__ash_bindings__.sql_behaviour.manual_relationship_function(), [
              query,
              opts,
@@ -1286,6 +1308,12 @@ defmodule AshSql.Join do
              relationship_destination
            ]) do
         {:ok, query} ->
+          query =
+            update_in(
+              query.__ash_bindings__.expression_accumulator,
+              &AshSql.Query.Projection.unknown/1
+            )
+
           AshSql.Aggregate.add_aggregates(
             query,
             used_aggregates,
@@ -1420,6 +1448,8 @@ defmodule AshSql.Join do
             end
           )
 
+        query = AshSql.Query.Projection.track_source(query, current_binding, relationship)
+
         query =
           case kind do
             :inner ->
@@ -1477,7 +1507,8 @@ defmodule AshSql.Join do
     full_path = path ++ [relationship.name]
     initial_ash_bindings = query.__ash_bindings__
 
-    binding_data = %{type: kind, path: full_path, source: source}
+    projection = if Map.get(relationship, :from_many?), do: make_ref()
+    binding_data = %{type: kind, path: full_path, source: source, projection: projection}
 
     query = AshSql.Bindings.add_binding(query, binding_data)
 
@@ -1505,6 +1536,8 @@ defmodule AshSql.Join do
           end
         end
       )
+
+    query = AshSql.Query.Projection.track_source(query, current_binding, relationship)
 
     destination_filter =
       relationship.destination
@@ -1540,6 +1573,7 @@ defmodule AshSql.Join do
              refs_at_path: path,
              require_lateral?: require_lateral?,
              filter_subquery?: true,
+             projection: projection,
              join_binding:
                if(!Map.get(relationship, :from_many?), do: initial_ash_bindings.current),
              on_subquery: fn subquery ->
@@ -1719,6 +1753,8 @@ defmodule AshSql.Join do
           end
         end
       )
+
+    query = AshSql.Query.Projection.track_source(query, current_binding, relationship)
 
     query_with_bindings =
       AshSql.Bindings.add_binding(query, %{
